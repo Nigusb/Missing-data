@@ -1,0 +1,16 @@
+---
+title: "Missing data practical"
+author: "Nigus"
+date: "2024-02-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read dataset
+```{r}
+dreams_dat <- read.csv2("Dreams_reduced.csv")
+```
+
