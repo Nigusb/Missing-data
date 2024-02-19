@@ -11,6 +11,603 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## Read dataset
 ```{r}
-dreams_dat <- read.csv2("Dreams_reduced.csv")
+all_dat <- read.csv2("Dreams_reduced.csv")
+```
+
+# Explore the data
+```{r}
+head(all_dat, 5)
+names(all_dat)
+str(all_dat)
+```
+
+## primary endpoint
+```{r}
+tab_primary = table(all_dat$risk_score) 
+table(all_dat$risk_score > 0)
+
+h_primary = hist(all_dat$risk_score, xlim = c(0,100), breaks = 100, main = "",
+                 xlab = "Risk score (between 0 and 100)")
+```
+
+
+## 1. How many participants included in the study?
+```{r}
+n <- nrow(all_dat) 
+print(n)
+```
+
+## 2. What is the age distribution of individuals in the DREAMS study?
+```{r}
+tab_age = table(all_dat$age) 
+rel_freq = tab_age/n
+
+
+xgrid = seq(min(all_dat$age)-0.5,max(all_dat$age)+0.5,1)
+h = hist(all_dat$age, main = "", ylab = "Frequency", xlab = "Age",
+         breaks = xgrid, ylim = c(0,550))
+lines(as.numeric(names(tab_age)), tab_age, col = 2, lwd = 2)
+text(xgrid[-length(xgrid)] + 0.5, tab_age + 25,
+     paste(round(rel_freq*100,1),"%"), cex = 0.8)
+```
+
+# missing data
+
+## For some of the participants, information about the primary endpoint and/or additional covariate information is lacking. Quantify the extent of the missing data in the dataset:
+
+## 1. For some of the variables, missing observations are coded as 999 instead of NA. First recode missing observations as NA. NOTE: for the primary endpoint, some observations are equal to 777 which requires recoding to NA as well.
+```{r}
+## convert 777 and 999 to NA in the primary endpoint
+all_dat$risk_score[all_dat$risk_score == 777 | all_dat$risk_score == 999] = NA
+
+## recoding other vvariables
+n_recodings = apply(all_dat, 2, function(x){sum(x == 999, na.rm = T)}) 
+all_dat[which(all_dat == 999, arr.ind = T)] = NA
+
+## number of missing observations in the primary endpoint
+sum(is.na(all_dat$risk_score))
+```
+
+## 2. Explore the level of missing data in the dataset by calculating the frequency of missing observations for each variable.
+```{r}
+n_missing = apply(all_dat, 2, FUN = function(x){sum(is.na(x))}) 
+perc_missing = n_missing/nrow(all_dat)
+perc_missing
+```
+
+## 3. How many participants have at least one missing observation for the recorded variables?
+```{r}
+n_subjects_missing_values = sum(apply(all_dat, 1, function(x){sum(is.na(x))}) > 0) 
+n_subjects_missing_values
+```
+
+
+## 4. Alternatively, provide a graphical exploration of the amount of missing data by variable using the function aggr in the R package VIM.
+```{r}
+suppressPackageStartupMessages(library(VIM))
+
+aggr_plot <- aggr(all_dat, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(all_dat), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+```
+
+# Missing data techniques and questions
+
+## Let us first focus on the primary endpoint. Study the marginal distribution of the observed risk perception scores for the participants in the DREAMS study.
+
+## 1. Which missingness mechanisms do exist? Explain.
+```{r}
+library(naniar)
+
+mcar_test(all_dat)
+```
+
+## Define the variable r
+```{r}
+all_dat$r <- as.numeric(is.na(all_dat$risk_score))
+
+## check percentage of missingness
+abs_missing <- table(all_dat$r)
+rel_missing <- abs_missing/sum(abs_missing) 
+rel_missing
+```
+
+## Fit logistric regression (for missingness indicator)
+```{r}
+missing_glm = glm(r ~ age + factor(educational_level) +
+               factor(residential_area) + monthly_income, data = all_dat,
+               family = binomial(link = "logit"))
+summary(missing_glm)
+```
+
+```{r}
+## prediction performance
+cutoffs = seq(0,1,0.05)
+prediction_error = vector();
+precision = vector();
+recall = vector();
+F1 = vector();
+TotP = sum(all_dat$r == 1);
+TotN = sum(all_dat$r == 0);
+FP = vector(); TP = vector();
+FN = vector(); TN = vector();
+ 
+for (j in 1:length(cutoffs)){
+r_prediction = as.numeric(predict(missing_glm, type = "response") > cutoffs[j]) 
+prediction_error[j] = sum(abs(all_dat$r - r_prediction))/length(all_dat$r);
+  FP[j] = sum(abs(all_dat$r[all_dat$r == 1] - r_prediction[all_dat$r == 1]));
+  TP[j] = TotP - FP[j];
+  FN[j] = sum(abs(all_dat$r[all_dat$r == 0] - r_prediction[all_dat$r == 0]));
+  TN[j] = TotN - FN[j];
+  precision[j] = TP[j]/(TP[j] + FP[j]);
+  recall[j] = TP[j]/(TP[j] + FN[j]);
+  F1[j] = (2*precision[j]*recall[j])/(precision[j] + recall[j]);
+}
+plot(cutoffs, prediction_error, xlab = "Cut-off",  ylab = "Prediction error",
+     lwd = 2, type = "b", xlim = c(0.4, 0.6), ylim = c(0.22, 0.26))
+abline(h = rel_missing[2], col = 2, lwd = 2, lty = 2)
+```
+
+```{r}
+## Alternative method for prediction performance
+plot(cutoffs, FP/TotP, xlab = "Cut-off",  ylab = "False/True positive rate",
+     lwd = 2, type = "b")
+lines(cutoffs, TP/TotP, lwd = 2, col = "orange", type = "b")
+lines(cutoffs, FN/TotN, lwd = 2, col = "blue", type = "b", lty = 2)
+lines(cutoffs, TN/TotN, lwd = 2, col = "pink", type = "b", lty = 2)
+legend(0.8, 0.8, c("FP", "TP", "FN", "TN"),
+       col = c("black","orange","blue","pink"),
+       lty = c(1,1,2,2), lwd = 2, bty = "n")
+```
+
+```{r}
+## Another prediction ability
+plot(cutoffs, F1, lwd = 2, type = "b", xlab = "Cut-off",
+     ylab = "F1 score", xlim = c(0,0.6), ylim = c(0,1))
+lines(cutoffs, precision, type = "b", lwd = 2, col = "orange")
+lines(cutoffs, recall, type = "b", lwd = 2, col = "pink")
+```
+
+## 2. Formulate an imputation model for the (pseudo-)continuous endpoint Z defined as the risk perception score (on a range of 0 – 100).
+
+## a. More specifically, fit a linear regression model for Z in terms of age, educational level, residential area and monthly income.
+```{r}
+## linear regression without transformation
+lm_fit1 = glm(risk_score ~ age + factor(educational_level) +
+               factor(residential_area) + monthly_income, data = all_dat)
+summary(lm_fit1)
+
+### modeldiagnostics--normality
+qqnorm(residuals(lm_fit1), pch = 1, frame = FALSE) 
+qqline(residuals(lm_fit1), col = "steelblue", lwd = 2)
+```
+
+## b. What about the excess number of zero observations? Would a transformation help
+```{r}
+## linear regression with transformation
+lm_fit2 = glm(log(risk_score + 1) ~ age + factor(educational_level) +
+               factor(residential_area) + monthly_income, data = all_dat)
+summary(lm_fit2)
+
+### model disgnostics--normality
+qqnorm(residuals(lm_fit2), pch = 1, frame = FALSE) 
+qqline(residuals(lm_fit2), col = "steelblue", lwd = 2)
+```
+
+## 3. Consider the random variable Y defined as having a risk score equal to zero (no risk of HIV acquisition). Construct an imputation model for Y, under the assumption of missing at random (MAR), and depending on the covariates age, educational level, residential area, and monthly income. What type of model will you consider?
+```{r}
+## We first formulate a logistic regression model for the random variable Y, conditional on covariates, i.e., modelling the probability of having a zero risk perception score
+## Define imputation model for Y = risk perception score equal to zero
+all_dat$y1 = as.numeric(all_dat$risk_score == 0)
+
+## LR model
+glm_fit = glm(y1 ~ age + factor(educational_level) + factor(residential_area) +
+                monthly_income, data = all_dat,
+              family = "binomial"(link = logit))
+summary(glm_fit)
+```
+
+## 4. Based on the fitted imputation model (for Y), predict the missing y-values, and store the results in a new data frame in R. Prediction of the probability of a zero risk can be performed using the predict-function in R and prediction of y (being equal to zero or one) should be based on an estimated probability of having a zero-risk perception exceeding 0.5.
+```{r}
+## Define new imputed dataset
+imp_dat = all_dat
+
+## single imputation
+imp_dat$y1_imp = as.numeric(predict(glm_fit, newdata = all_dat,
+                                    type = "response") > 0.5)
+imp_dat$y1_imp2 = imp_dat$y1_imp
+
+## RESTORE previous observed values (after assessment of prediction error)
+imp_dat$y1_imp[is.na(imp_dat$y1) == F] = imp_dat$y1[is.na(imp_dat$y1) == F]
+```
+
+## 5. How would you evaluate the performance of this imputation (or prediction) model?
+```{r}
+## Prediction error (among observed values)
+table(imp_dat$y1, imp_dat$y1_imp2)
+
+sum(abs(imp_dat$y1 - imp_dat$y1_imp2) == 1, na.rm = T)/sum(!is.na(imp_dat$y1))
+
+```
+
+## 6. The procedure in step 4. describes a single imputation process. How would you extend the approach to account for the uncertainty related to the imputation step? More specifically, how could you repeatedly and multiple times impute the missing observations for the random variable Y? Create 10 different imputation sets based on such an approach.
+```{r}
+## Multiple imputation
+M = 10
+set.seed(2504)
+for (imp_id in 1:M){
+    imp_set_name = paste0("imp_dataset",imp_id)
+    ynew = rbinom(n, size = 1, prob = predict(glm_fit, newdata = all_dat,
+                                              type = "response"))
+    ynew[is.na(all_dat$y1) == F] = all_dat$y1[is.na(all_dat$y1) == F]
+assign(imp_set_name, cbind(all_dat, ynew))
+}
+```
+
+## 7. If we impute Y = 1, the resulting imputed value for Z is equal to zero. However, how can we impute the missing values for our primary endpoint Z, conditional on Y being equal to 0 (i.e., implying that the risk perception score differs from zero). Formulate an imputation model for Z depending on age, educational level, residential area, and monthly income. What type of model will you consider?
+```{r}
+## Define data with non-zero risk scores
+reduced_dat = all_dat[all_dat$risk_score != 0, ]
+
+## linear regression model
+lm_fit = lm(risk_score ~ age + factor(educational_level) +
+              factor(residential_area) + monthly_income, data = reduced_dat)
+summary(lm_fit)
+```
+
+```{r}
+hist(residuals(lm_fit), main = "", xlab = "Residuals")
+```
+
+```{r}
+plot(reduced_dat$age[!is.na(reduced_dat$age)], residuals(lm_fit), xlab = "Age",
+     ylab = "Residuals")
+```
+
+```{r}
+lm_fit2 = lm(log(risk_score + 1) ~ age + factor(educational_level) +
+               factor(residential_area) + monthly_income, data = reduced_dat)
+summary(lm_fit2)
+```
+
+```{r}
+hist(residuals(lm_fit2), main = "", xlab = "Residuals")
+```
+
+```{r}
+plot(reduced_dat$age[!is.na(reduced_dat$age)], residuals(lm_fit2), xlab = "Age",
+     ylab = "Residuals")
+```
+
+```{r}
+## model diagnostics--normality
+par(mfrow = c(1,2))
+qqnorm(residuals(lm_fit), pch = 1, frame = FALSE) 
+qqline(residuals(lm_fit), col = "steelblue", lwd = 2)
+
+qqnorm(residuals(lm_fit2), pch = 1, frame = FALSE)
+qqline(residuals(lm_fit2), col = "steelblue", lwd = 2)
+```
+
+## 8. Based on the fitted imputation model (for Z, conditional on Y = 0), predict the missing z-values, and store the results in a new data frame in R. Prediction can be done using the predict-function in R.
+```{r}
+## Imputing values for Z (based on model 2 - with transformation)
+imp_dat$znew_si = exp(predict(lm_fit2, newdata = all_dat) + rnorm(n, mean = 0,
+                                                            sd = sigma(lm_fit2)))-1
+imp_dat$znew_si[is.na(all_dat$risk_score) == F] = all_dat$risk_score[is.na(all_dat$risk_score) == F]
+imp_dat$znew_si[imp_dat$y1_imp == 1] = 0
+
+```
+
+## 9. The procedure in step 8. (i.e., also referred to as regression imputation) describes a single imputation process. How would you extend the approach to perform multiple imputation?
+
+## a. Consider random generation of error terms (random noise);
+```{r}
+##multiple imputation
+
+d_imp = plot(density(all_dat$risk_score, na.rm = T), main = "",
+             xlab = "Risk score", ylab = "Density plot", lwd = 3, col = 1)
+for (imp_id in 1:M){
+imp_set_old = paste0("imp_dataset",imp_id)
+    imp_set_name = paste0("imp_dataset_full",imp_id)
+    
+    ## Without transformation
+  ##------------------------
+    #znew = predict(lm_fit, newdata = all_dat) + rnorm(n, mean = 0,
+    #                                                  sd = sigma(lm_fit))
+    ## With transformation
+  ##---------------------
+}
+znew = exp(predict(lm_fit2, newdata = all_dat) + rnorm(n, mean = 0,
+                                                       sd = sigma(lm_fit2)))-1
+znew[is.na(all_dat$risk_score) == F] =
+  all_dat$risk_score[is.na(all_dat$risk_score) == F]
+znew[get(imp_set_old)$ynew == 1] = 0
+lines(density(znew), col = imp_id + 1, lwd = 2)
+assign(imp_set_name, cbind(get(imp_set_old), znew))
+```
+
+## b. Random generation of the asymptotic distribution of the estimators of the model parameters in combination with random noise.
+```{r}
+## Multiple imputation
+M = 10
+   d_imp = plot(density(all_dat$risk_score, na.rm = T), main = "",
+                xlab = "Risk score", ylab = "Density plot", lwd = 3, col = 1)
+for (imp_id in 1:M){
+set.seed(imp_id)
+imp_set_old = paste0("imp_dataset",imp_id) 
+imp_set_name = paste0("imp_dataset_full2",imp_id)
+## Without transformation
+##------------------------
+#sm_values = summary(lm_fit)$coefficients
+#new_coef = rnorm(nrow(sm_values), mean = sm_values[,1], sd = sm_values[,2]) #new_pred = apply(model.matrix.lm(lm_fit, data = all_dat,
+# na.action = "na.pass")%*%new_coef, 1, sum) + # rnorm(n, mean = 0, sd = sigma(lm_fit))
+#znew = new_pred
+## With transformation
+##---------------------
+sm_values = summary(lm_fit2)$coefficients
+new_coef = rnorm(nrow(sm_values), mean = sm_values[,1], sd = sm_values[,2]) 
+new_pred = apply(model.matrix.lm(lm_fit2, data = all_dat,
+                                      na.action = "na.pass")%*%new_coef, 1, sum) +
+       rnorm(n, mean = 0, sd = sigma(lm_fit2))
+     znew = exp(new_pred)-1
+     znew[is.na(all_dat$risk_score) == F] =
+  all_dat$risk_score[is.na(all_dat$risk_score) == F]
+  znew[get(imp_set_old)$ynew == 1] = 0
+  lines(density(znew), col = imp_id + 1, lwd = 2)
+assign(imp_set_name, cbind(get(imp_set_old), znew))
+}
+```
+
+## 10. Construct M = 10 imputation sets and estimate whether there exists a significant difference in average baseline risk perception score among AGYW living in Cosmocity versus those living in Fourways. How would you combine the results of the different analyses?
+```{r}
+## MI analyese
+coef_imp = vector() 
+se_imp = vector()
+
+for (imp_id in 1:M){
+  imp_set_name = paste0("imp_dataset_full2",imp_id)
+  glm_fit_imp = glm(ynew ~ age + factor(educational_level) +
+                      factor(residential_area) + monthly_income,
+                    data = get(imp_set_name), family = binomial(link = "logit"))
+  sm_glm_imp = summary(glm_fit_imp)$coefficients
+  cov_id = which(rownames(sm_glm_imp) == "factor(residential_area)Fourways")
+  coef_imp[imp_id] = sm_glm_imp[cov_id,1]
+  se_imp[imp_id] = sm_glm_imp[cov_id,2]
+}
+mean_estimate = mean(coef_imp); mean_estimate;
+```
+
+```{r}
+between_var = var(coef_imp); between_var;
+```
+
+```{r}
+within_var = mean(se_imp**2); within_var;
+```
+
+```{r}
+total_var = within_var + (1 + 1/M)*between_var; total_var;
+```
+
+```{r}
+## odds ratio estimation
+OR = exp(mean_estimate); OR;
+```
+
+```{r}
+### Hypothesis problem H0: beta = 0; H1: beta != 0
+wald_test_statistic = mean_estimate/sqrt(total_var);
+wald_test_statistic;
+```
+
+```{r}
+n = nrow(imp_dataset_full21)
+k = nrow(sm_glm_imp)
+lambda = (between_var + (between_var/M))/total_var
+df_old = (M - 1)/(lambda^2)
+df_obs = (((n - k) + 1)/((n - k) + 3)) * ((n - k)*(1 - lambda))
+df_adj = (df_old*df_obs)/(df_old + df_obs)
+
+### calculate two-sided p value
+p_old = 2*pt(wald_test_statistic, df = df_old, lower.tail = FALSE) 
+p_adj = 2*pt(wald_test_statistic, df = df_adj, lower.tail = FALSE)
+
+p_old; p_adj;
+
+```
+
+```{r}
+### 95% CI for the OR
+logOR = mean_estimate;
+alpha = 0.05
+df = df_adj
+cv = qt(1-alpha/2, df = df)
+ll_logOR = logOR - cv*sqrt(total_var)
+ul_logOR = logOR + cv*sqrt(total_var)
+ll_OR = exp(ll_logOR)
+ul_OR = exp(ul_logOR)
+print(c(OR, ll_OR, ul_OR));
+```
+
+```{r}
+## MI analyses
+coef_imp = vector() 
+se_imp = vector()
+for (imp_id in 1:M){
+imp_set_name = paste0("imp_dataset_full2",imp_id)
+  dat_used = get(imp_set_name)
+  glm_fit_imp = glm(log(znew + 1) ~ age + factor(educational_level) +
+                      factor(residential_area) + monthly_income,
+                    data = dat_used[dat_used$znew > 0, ],
+                    family = gaussian(link = "identity"))
+  sm_glm_imp = summary(glm_fit_imp)$coefficients
+  cov_id = which(rownames(sm_glm_imp) == "factor(residential_area)Fourways")
+  coef_imp[imp_id] = sm_glm_imp[cov_id,1]
+  se_imp[imp_id] = sm_glm_imp[cov_id,2]
+}
+
+mean_estimate = mean(coef_imp); mean_estimate;
+```
+
+```{r}
+between_var = var(coef_imp); between_var;
+```
+
+```{r}
+within_var = mean(se_imp**2); within_var;
+```
+
+```{r}
+total_var = within_var + (1 + 1/M)*between_var; total_var;
+```
+
+```{r}
+## difference of the mean transformed score
+mean_estimate;
+```
+
+```{r}
+### Hypothesis problem H0: beta = 0; H1: beta != 0
+wald_test_statistic = mean_estimate/sqrt(total_var); 
+wald_test_statistic;
+```
+
+```{r}
+n = nrow(dat_used[dat_used$znew > 0, ])
+k = nrow(sm_glm_imp)
+lambda = (between_var + (between_var/M))/total_var
+df_old = (M - 1)/(lambda^2)
+df_obs = (((n - k) + 1)/((n - k) + 3)) * ((n - k)*(1 - lambda))
+df_adj = (df_old*df_obs)/(df_old + df_obs)
+
+```
+
+```{r}
+### p value
+p_old = 2*pt(wald_test_statistic, df = df_old, lower.tail = FALSE)
+p_adj = 2*pt(wald_test_statistic, df = df_adj, lower.tail = FALSE)
+p_old; p_adj;
+```
+
+## 11. Check whether the number of imputations is sufficient. More specifically, create a graph in which you assess the convergence of the pooled difference in average baseline risk perception score among AGYW living in Cosmocity versus those living in Fourways depending on the number of imputations.
+```{r}
+mean_estimate_vec = vector()
+total_var_vec = vector()
+for (k in 1:10){
+set.seed(k)
+select_imp = sample(1:10, size = k, replace = F) 
+mean_estimate_vec[k] = mean(coef_imp[select_imp]); between_var = var(coef_imp[select_imp]);
+within_var = mean(se_imp[select_imp]**2); total_var_vec[k] = within_var + (1 + 1/M)*between_var;
+}
+plot(1:10, mean_estimate_vec, xlab = "M", ylab = "Difference in means")
+
+## Repeat the imputation process adding 10 more imputations
+for (imp_id in 11:(2*M)){
+  set.seed(imp_id)
+  imp_set_name = paste0("imp_dataset",imp_id)
+    ynew = rbinom(n, size = 1, prob = predict(glm_fit, newdata = all_dat,
+                                              type = "response"))
+    ynew[is.na(all_dat$y1) == F] = all_dat$y1[is.na(all_dat$y1) == F]
+    assign(imp_set_name, cbind(all_dat, ynew))
+  imp_set_old = paste0("imp_dataset",imp_id)
+  imp_set_name = paste0("imp_dataset_full2",imp_id)
+## With transformation
+##---------------------
+sm_values = summary(lm_fit2)$coefficients
+new_coef = rnorm(nrow(sm_values), mean = sm_values[,1], sd = sm_values[,2])
+new_pred = apply(model.matrix.lm(lm_fit2, data = all_dat,
+                                   na.action = "na.pass")%*%new_coef, 1, sum) +
+    rnorm(n, mean = 0, sd = sigma(lm_fit2))
+  znew = exp(new_pred)-1
+  znew[is.na(all_dat$risk_score) == F] =
+    all_dat$risk_score[is.na(all_dat$risk_score) == F]
+    znew[get(imp_set_old)$ynew == 1] = 0
+    lines(density(znew), col = imp_id + 1, lwd = 2)
+  assign(imp_set_name, cbind(get(imp_set_old), znew))
+}
+```
+
+```{r}
+for (imp_id in 11:(2*M)){
+imp_set_name = paste0("imp_dataset_full2",imp_id)
+  dat_used = get(imp_set_name)
+  glm_fit_imp = glm(log(znew + 1) ~ age + factor(educational_level) +
+                      factor(residential_area) + monthly_income,
+                    data = dat_used[dat_used$znew > 0, ],
+                    family = gaussian(link = "identity"))
+  sm_glm_imp = summary(glm_fit_imp)$coefficients
+  cov_id = which(rownames(sm_glm_imp) == "factor(residential_area)Fourways")
+  coef_imp[imp_id] = sm_glm_imp[cov_id,1]
+  se_imp[imp_id] = sm_glm_imp[cov_id,2]
+}
+mean_estimate = mean(coef_imp); mean_estimate;
+```
+
+```{r}
+between_var = var(coef_imp); between_var;
+```
+
+```{r}
+within_var = mean(se_imp**2); within_var;
+```
+
+```{r}
+total_var = within_var + (1 + 1/M)*between_var; total_var;
+```
+
+```{r}
+mean_estimate_vec = vector()
+total_var_vec = vector()
+for (k in 1:(2*M)){
+set.seed(k)
+select_imp = sample(1:20, size = k, replace = F) 
+mean_estimate_vec[k] = mean(coef_imp[select_imp]); between_var = var(coef_imp[select_imp]);
+within_var = mean(se_imp[select_imp]**2); total_var_vec[k] = within_var + (1 + 1/M)*between_var;
+}
+plot(1:20, mean_estimate_vec, xlab = "M", ylab = "Difference in means",
+     ylim = c(0,0.3), type = "b", lwd = 2)
+```
+
+
+## 12. The MICE package in R provides an automated way of performing Multiple Imputation with Chained Equations (Van Buuren, 2011). The MICE approach is also referred to as Full Conditional Specification, meaning that available information on all variables, except for the one to be imputed, will be used in the imputation model to impute missing values. Use the MICE package to perform multiple imputation for the DREAMS dataset at hand.
+```{r}
+## define the dataset to be used
+
+mice_dat = subset(all_dat, select = c("age", "educational_level",
+                                      "residential_area", "household_members",
+                                      "household_water", "electricity_at_home",
+                                      "monthly_income","alcohol_use","sti",
+                                      "discuss_health_issue","hiv_talk",
+                                      "ever_tested_for_hiv","sexual_partners",
+                                      "physical_violence","preventing_pregnancy",
+                                      "risk_score"))
+
+## MICE
+suppressPackageStartupMessages(library(mice))
+
+# perform MI
+imp = mice(mice_dat, m= 10, maxit = 10, printFlag = FALSE, seed = 123)
+
+## Analyse the imputed dataset
+m1 <- with(data = imp, expr = lm(log(risk_score + 1) ~ age +
+factor(educational_level) +
+factor(residential_area) +
+factor(household_water) +
+monthly_income +
+factor(alcohol_use) +
+sti +
+hiv_talk +
+ever_tested_for_hiv +
+sexual_partners +
+physical_violence +
+preventing_pregnancy))
+
+pooled_analysis <- pool(m1)
+
+## difference in mean perceived score
+pooled_analysis$pooled$estimate[9]
+
+pvalue = 2*pt(pooled_analysis$pooled$t[9], df = pooled_analysis$pooled$df[9],
+              lower.tail = FALSE)
+pvalue
 ```
 
